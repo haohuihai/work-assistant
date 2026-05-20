@@ -1,0 +1,152 @@
+{
+  "name": "work-assistant",
+  "displayName": "工作助手 (Work Assistant)",
+  "description": "基于 Swagger/OpenAPI 的工作助手，用于管理接口项目、搜索请求、查看接口详情并测试 API。",
+  "version": "0.0.9",
+  "engines": { "vscode": "^1.80.0" },
+  "main": "./out/extension.js",
+  "activationEvents": [
+    "onCommand:swaggerHelper.openUI",
+    "onCommand:swaggerHelper.lookupRoute",
+    "onCommand:swaggerHelper.openApiTestPage",
+    "onCommand:swaggerHelper.addProject",
+    "onCommand:swaggerHelper.searchRequests",
+    "onCommand:swaggerHelper.clearSearch",
+    "onCommand:swaggerHelper.renameProject",
+    "onCommand:swaggerHelper.refreshProject",
+    "onCommand:swaggerHelper.openApiDetail",
+    "onView:swaggerHelper.workView",
+    "onView:swaggerHelper.apiTestPage",
+    "onView:swaggerHelper.apiTestTreeView",
+    "onView:swaggerHelper.apiTestDataView"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "swaggerHelper.openUI",
+        "title": "工作助手: 添加项目"
+      },
+      {
+        "command": "swaggerHelper.lookupRoute",
+        "title": "工作助手: 查找路由"
+      },
+      {
+        "command": "swaggerHelper.addProject",
+        "title": "新增项目"
+      },
+      {
+        "command": "swaggerHelper.searchRequests",
+        "title": "搜索URL"
+      },
+      {
+        "command": "swaggerHelper.clearSearch",
+        "title": "清空搜索"
+      },
+      {
+        "command": "swaggerHelper.renameProject",
+        "title": "修改标题"
+      },
+      {
+        "command": "swaggerHelper.refreshProject",
+        "title": "更新"
+      },
+      {
+        "command": "swaggerHelper.openApiDetail",
+        "title": "打开接口详情"
+      },
+      {
+        "command": "swaggerHelper.openApiTestPage",
+        "title": "工作助手: 打开 API 测试页"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "swaggerHelper",
+          "title": "工作助手",
+          "icon": "resources/work.svg"
+        }
+      ]
+    },
+    "views": {
+      "swaggerHelper": [
+        {
+          "id": "swaggerHelper.workView",
+          "name": "工作"
+        }
+      ]
+    },
+    "customEditors": [
+      {
+        "viewType": "swaggerHelper.apiTestCustomEditor",
+        "displayName": "API 测试自定义编辑器",
+        "selector": [
+          {
+            "filenamePattern": "*.apitest"
+          }
+        ],
+        "priority": "default"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "swaggerHelper.addProject",
+          "when": "view == swaggerHelper.workView",
+          "group": "navigation@1"
+        },
+        {
+          "command": "swaggerHelper.searchRequests",
+          "when": "view == swaggerHelper.workView",
+          "group": "navigation@2"
+        },
+        {
+          "command": "swaggerHelper.clearSearch",
+          "when": "view == swaggerHelper.workView",
+          "group": "navigation@3"
+        },
+        {
+          "command": "swaggerHelper.openApiTestPage",
+          "when": "view == swaggerHelper.apiTestPage",
+          "group": "navigation@1"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "swaggerHelper.renameProject",
+          "when": "view == swaggerHelper.workView && viewItem == project",
+          "group": "inline@1"
+        },
+        {
+          "command": "swaggerHelper.refreshProject",
+          "when": "view == swaggerHelper.workView && viewItem == project",
+          "group": "inline@2"
+        }
+      ]
+    }
+  },
+  
+  "files": [
+    "out",
+    "resources",
+    "package.json",
+    "README.md"
+  ],
+  "repository": {
+    "type": "git"
+  },
+  "publisher": "coder-hai-11",
+  "scripts": {
+    "prepackage": "pnpm run compile",
+    "package": "vsce package",
+    "inittsc": "tsc --init --rootDir src --outDir out --esModuleInterop",
+    "compile": "tsc -p ./",
+    "publish": "pnpm run package && vsce publish"
+  },
+  "dependencies": {
+  },
+  "devDependencies": {
+    "typescript": "^5.0.0",
+    "@types/vscode": "^1.80.0"
+  }
+}
