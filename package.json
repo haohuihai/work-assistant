@@ -2,7 +2,7 @@
   "name": "work-assistant",
   "displayName": "工作助手 (Work Assistant)",
   "description": "基于 Swagger/OpenAPI 的工作助手，用于管理接口项目、搜索请求、查看接口详情并测试 API。",
-  "version": "0.0.9",
+  "version": "0.1.2",
   "engines": { "vscode": "^1.80.0" },
   "main": "./out/extension.js",
   "activationEvents": [
