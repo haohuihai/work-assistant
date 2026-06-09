@@ -225,7 +225,17 @@ async function addProject(provider: SwaggerTreeProvider) {
   if (!url?.trim()) return
   const normalized = normalizeUrl(url)
   try {
-    const project = await buildProjectByUrl(normalized)
+    const project = await vscode.window.withProgress(
+      {
+        location: vscode.ProgressLocation.Notification,
+        title: '加载 Swagger 项目',
+        cancellable: false
+      },
+      async progress => {
+        progress.report({ message: `正在加载 ${normalized}` })
+        return await buildProjectByUrl(normalized)
+      }
+    )
     const projects = provider.getProjects()
     const existed = projects.findIndex(p => p.url === normalized)
     if (existed >= 0) {
@@ -245,7 +255,17 @@ async function refreshProject(provider: SwaggerTreeProvider, projectId: string) 
   const target = projects.find(p => p.id === projectId)
   if (!target) return
   try {
-    const refreshed = await buildProjectByUrl(target.url, target.id, target.title)
+    const refreshed = await vscode.window.withProgress(
+      {
+        location: vscode.ProgressLocation.Notification,
+        title: '更新 Swagger 项目',
+        cancellable: false
+      },
+      async progress => {
+        progress.report({ message: `正在刷新 ${target.url}` })
+        return await buildProjectByUrl(target.url, target.id, target.title)
+      }
+    )
     const next = projects.map(p => p.id === projectId ? refreshed : p)
     await provider.saveProjects(next)
     vscode.window.showInformationMessage(`已更新：${refreshed.title}`)
