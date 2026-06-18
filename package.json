@@ -138,7 +138,8 @@
     "out",
     "resources",
     "package.json",
-    "README.md"
+    "README.md",
+    "CHANGELOG.md"
   ],
   "repository": {
     "type": "git"

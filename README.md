@@ -59,5 +59,5 @@
 
 ## 更新记录
 
-查看扩展更新历史，请参阅 [CHANGELOG.md](./CHANGELOG.md)。
+查看扩展更新历史，请参阅 [CHANGELOG.md]。
 
