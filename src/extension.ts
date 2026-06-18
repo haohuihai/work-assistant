@@ -1,6 +1,6 @@
 import * as vscode from 'vscode'
 import { registerApiTestPage } from './apiTestPage'
-
+import { registerRightClickMenu } from './rightClickMenu'
 type ApiItem = {
   path: string
   method: string
@@ -139,7 +139,8 @@ export function activate(context: vscode.ExtensionContext) {
   const provider = new SwaggerTreeProvider(context)
   const workView = vscode.window.createTreeView('swaggerHelper.workView', { treeDataProvider: provider })
   // registerApiTestPage(context)
-
+  registerRightClickMenu(context)
+  // registerWhenClauseTest(context)
   context.subscriptions.push(
     workView,
     vscode.commands.registerCommand('swaggerHelper.openUI', async () => {
@@ -161,6 +162,7 @@ export function activate(context: vscode.ExtensionContext) {
         vscode.window.showInformationMessage('已清空搜索')
       }
     }),
+  
     vscode.commands.registerCommand('swaggerHelper.clearSearch', () => {
       provider.setKeyword('')
       vscode.window.showInformationMessage('已清空搜索')

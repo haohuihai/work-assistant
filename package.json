@@ -2,13 +2,12 @@
   "name": "work-assistant",
   "displayName": "工作助手 (Work Assistant)",
   "description": "基于 Swagger/OpenAPI 的工作助手，用于管理接口项目、搜索请求、查看接口详情并测试 API。",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "engines": { "vscode": "^1.80.0" },
   "main": "./out/extension.js",
   "activationEvents": [
     "onCommand:swaggerHelper.openUI",
     "onCommand:swaggerHelper.lookupRoute",
-    "onCommand:swaggerHelper.openApiTestPage",
     "onCommand:swaggerHelper.addProject",
     "onCommand:swaggerHelper.searchRequests",
     "onCommand:swaggerHelper.clearSearch",
@@ -16,9 +15,7 @@
     "onCommand:swaggerHelper.refreshProject",
     "onCommand:swaggerHelper.openApiDetail",
     "onView:swaggerHelper.workView",
-    "onView:swaggerHelper.apiTestPage",
-    "onView:swaggerHelper.apiTestTreeView",
-    "onView:swaggerHelper.apiTestDataView"
+    "onCommand:swaggerHelper.publish"
   ],
   "contributes": {
     "commands": [
@@ -57,6 +54,10 @@
       {
         "command": "swaggerHelper.openApiTestPage",
         "title": "工作助手: 打开 API 测试页"
+      },
+      {
+        "command": "swaggerHelper.publish",
+        "title": "npm run publish"
       }
     ],
     "viewsContainers": {
@@ -122,6 +123,13 @@
           "when": "view == swaggerHelper.workView && viewItem == project",
           "group": "inline@2"
         }
+      ],
+      "editor/context": [
+        {
+          "command": "swaggerHelper.publish",
+          "when": "editorFocus",
+          "group": "navigation@99"
+        }
       ]
     }
   },
@@ -141,6 +149,7 @@
     "package": "vsce package",
     "inittsc": "tsc --init --rootDir src --outDir out --esModuleInterop",
     "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
     "publish": "pnpm run package && vsce publish"
   },
   "dependencies": {
