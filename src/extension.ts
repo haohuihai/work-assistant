@@ -1,6 +1,8 @@
 import * as vscode from 'vscode'
 import { registerApiTestPage } from './apiTestPage'
 import { registerRightClickMenu } from './rightClickMenu'
+import { showPipelineList } from './pipeLine'
+import { escapeHtml, normalizeUrl } from './utils'
 type ApiItem = {
   path: string
   method: string
@@ -184,6 +186,14 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('swaggerHelper.openApiDetail', async (project: ProjectItem, api: ApiItem) => {
       openApiDetail(project, api)
     }),
+    vscode.commands.registerCommand('swaggerHelper.showPipelineList', async () => {
+      try {
+        await showPipelineList()
+      } catch (error: unknown) {
+        const text = error instanceof Error ? error.message : String(error)
+        vscode.window.showErrorMessage(`查看流水线失败：${text}`)
+      }
+    }),
     vscode.commands.registerCommand('swaggerHelper.lookupRoute', async () => {
       const url = await vscode.window.showInputBox({
         prompt: 'Swagger 地址（支持 index.html / swagger-ui.html / api-docs.json）',
@@ -338,9 +348,6 @@ async function loadSwaggerDoc(inputUrl: string) {
   throw new Error(`无法从该地址解析 Swagger 文档：${inputUrl}`)
 }
 
-function normalizeUrl(raw: string) {
-  return raw.trim().replace(/\s+/g, '')
-}
 
 async function httpGetText(url: string, timeoutMs: number) {
   const controller = new AbortController()
@@ -669,12 +676,6 @@ function ensureParsedDescriptions(node: any) {
 }
 
 
-function escapeHtml(raw: string) {
-  return raw
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-}
 
 function escapeScriptContent(raw: string) {
   return raw

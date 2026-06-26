@@ -14,6 +14,7 @@
     "onCommand:swaggerHelper.renameProject",
     "onCommand:swaggerHelper.refreshProject",
     "onCommand:swaggerHelper.openApiDetail",
+    "onCommand:swaggerHelper.showPipelineList",
     "onView:swaggerHelper.workView",
     "onCommand:swaggerHelper.publish"
   ],
@@ -50,6 +51,10 @@
       {
         "command": "swaggerHelper.openApiDetail",
         "title": "打开接口详情"
+      },
+      {
+        "command": "swaggerHelper.showPipelineList",
+        "title": "查看流水线"
       },
       {
         "command": "swaggerHelper.openApiTestPage",
@@ -107,6 +112,11 @@
           "group": "navigation@3"
         },
         {
+          "command": "swaggerHelper.showPipelineList",
+          "when": "view == swaggerHelper.workView",
+          "group": "navigation@1"
+        },
+        {
           "command": "swaggerHelper.openApiTestPage",
           "when": "view == swaggerHelper.apiTestPage",
           "group": "navigation@1"
@@ -131,6 +141,38 @@
           "group": "navigation@99"
         }
       ]
+    },
+    "configuration": {
+      "title": "工作助手",
+      "properties": {
+        "swaggerHelper.yunxiao.domain": {
+          "type": "string",
+          "default": "openapi-rdc.aliyuncs.com",
+          "description": "云效服务接入点域名或基础 URL，例如 https://example.aliyun.com 或 https://example.aliyun.com/oapi/v1/flow。"
+        },
+        "swaggerHelper.yunxiao.token": {
+          "type": "string",
+          "default": "pt-HSJmWwZ6LzYyZ1nbNdLc7kJa_3ed23b4a-1e68-4592-a5cb-2515d9e00452",
+          "description": "云效个人访问令牌，用于 x-yunxiao-token 认证。查看流水线需只读权限，操作人工卡点需流水线运行任务读写权限。"
+        },
+        "swaggerHelper.yunxiao.organizationId": {
+          "type": "string",
+          "default": "68457f48f957ee9df4320126",
+          "description": "云效中心版 organizationId（中心站 openapi-rdc.aliyuncs.com 必填）。可在云效「组织管理后台 → 基本信息」查看。"
+        },
+        "swaggerHelper.yunxiao.page": {
+          "type": "number",
+          "default": 1,
+          "description": "默认流水线列表页码。"
+        },
+        "swaggerHelper.yunxiao.perPage": {
+          "type": "number",
+          "default": 20,
+          "minimum": 1,
+          "maximum": 30,
+          "description": "默认流水线列表每页条数。"
+        }
+      }
     }
   },
   
