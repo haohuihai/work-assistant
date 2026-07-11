@@ -152,12 +152,12 @@
         },
         "swaggerHelper.yunxiao.token": {
           "type": "string",
-          "default": "pt-HSJmWwZ6LzYyZ1nbNdLc7kJa_3ed23b4a-1e68-4592-a5cb-2515d9e00452",
+          "default": "",
           "description": "云效个人访问令牌，用于 x-yunxiao-token 认证。查看流水线需只读权限，操作人工卡点需流水线运行任务读写权限。"
         },
         "swaggerHelper.yunxiao.organizationId": {
           "type": "string",
-          "default": "68457f48f957ee9df4320126",
+          "default": "",
           "description": "云效中心版 organizationId（中心站 openapi-rdc.aliyuncs.com 必填）。可在云效「组织管理后台 → 基本信息」查看。"
         },
         "swaggerHelper.yunxiao.page": {
@@ -169,8 +169,13 @@
           "type": "number",
           "default": 20,
           "minimum": 1,
-          "maximum": 30,
+          "maximum": 50,
           "description": "默认流水线列表每页条数。"
+        },
+        "swaggerHelper.debugHttp": {
+          "type": "boolean",
+          "default": false,
+          "description": "开启后在「工作助手 HTTP」输出面板记录插件发出的 HTTP 请求与响应（token 会自动脱敏）。"
         }
       }
     }

@@ -1,5 +1,6 @@
 import * as vscode from 'vscode'
 import { registerApiTestPage } from './apiTestPage'
+import { fetchWithDebug } from './httpDebug'
 import { registerRightClickMenu } from './rightClickMenu'
 import { showPipelineList } from './pipeLine'
 import { escapeHtml, normalizeUrl } from './utils'
@@ -353,7 +354,7 @@ async function httpGetText(url: string, timeoutMs: number) {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
   try {
-    const response = await fetch(url, {
+    const response = await fetchWithDebug(url, {
       method: 'GET',
       headers: { 'User-Agent': 'VSCode Extension' },
       signal: controller.signal

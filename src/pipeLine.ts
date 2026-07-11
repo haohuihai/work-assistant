@@ -1,4 +1,5 @@
 import * as vscode from 'vscode'
+import { fetchWithDebug } from './httpDebug'
 import { escapeHtml, normalizeUrl } from './utils'
 
 
@@ -27,6 +28,7 @@ type PipelineJobAction = {
   disable?: boolean
   name?: string
   title?: string
+  params?: Record<string, unknown>
 }
 
 type PipelineRunJob = {
@@ -34,6 +36,7 @@ type PipelineRunJob = {
   name: string
   status: string
   params?: string
+  jobSign?: string
   actions?: PipelineJobAction[]
 }
 
@@ -67,19 +70,30 @@ type PipelineEnvGroup = {
   status: string
 }
 
+type CheckpointPassMode = 'validate' | 'start_job' | 'resume_deploy'
+
 type PipelineCheckpointBlock = {
   stageName: string
   stageStatus: string
   targetEnv: DeployEnvKey
   targetLabel: string
   job?: PipelineRunJob
+  actionJob?: PipelineRunJob
+  passMode?: CheckpointPassMode
+  deployOrderId?: number
   active: boolean
 }
+
+type PipelineDeployFlowBlock =
+  | { kind: 'env'; group: PipelineEnvGroup }
+  | { kind: 'checkpoint'; checkpoint: PipelineCheckpointBlock }
 
 type PipelineDeployLayout = {
   envGroups: PipelineEnvGroup[]
   checkpoints: PipelineCheckpointBlock[]
+  flowBlocks: PipelineDeployFlowBlock[]
   envInfo: EnvDeployMap
+  flowYaml?: string
 }
 
 type PipelineDetailView = {
@@ -91,12 +105,28 @@ type PipelineDetailView = {
   layout?: PipelineDeployLayout
 }
 
+type PipelineListPageInfo = {
+  page: number
+  perPage: number
+  total: number
+  totalPages: number
+}
+
+type PipelineListResult = {
+  pipelines: Array<{ pipelineId: number; pipelineName: string; createAccountId: string; createTime: number }>
+  pageInfo: PipelineListPageInfo
+}
+
+const DEFAULT_PIPELINE_PER_PAGE = 30
+
 type YunxiaoPanelContext = {
   flowBaseUrl: string
   token: string
   pipelines: PipelineSummary[]
   page: number
   perPage: number
+  total: number
+  totalPages: number
   current?: {
     pipelineId: number
     pipelineName: string
@@ -113,7 +143,7 @@ export async function showPipelineList() {
   const domain = yunxiaoConfig.get<string>('domain')?.trim() || ''
   const organizationId = yunxiaoConfig.get<string>('organizationId')?.trim() || ''
   const pageNum = 1
-  const perPageNum = 30
+  const perPageNum = DEFAULT_PIPELINE_PER_PAGE
 
   if (!token) {
     vscode.window.showErrorMessage('请先在设置中配置 swaggerHelper.yunxiao.token，再重新执行查看流水线。')
@@ -139,16 +169,24 @@ export async function showPipelineList() {
 
   try {
     const flowBaseUrl = buildYunxiaoFlowBaseUrl(apiOrigin, organizationId)
-    const pipelines = await fetchPipelineList(flowBaseUrl, token, pageNum, perPageNum)
+    const listResult = await fetchPipelineList(flowBaseUrl, token, pageNum, perPageNum)
     yunxiaoPanelContext = {
       flowBaseUrl,
       token,
-      page: 1,
-      perPage: 30,
-      pipelines
+      page: listResult.pageInfo.page,
+      perPage: listResult.pageInfo.perPage,
+      total: listResult.pageInfo.total,
+      totalPages: listResult.pageInfo.totalPages,
+      pipelines: listResult.pipelines
     }
     pipelinePanel!.title = '云效流水线列表'
-    updatePipelinePanel(renderPipelineListContent(pipelines, pageNum, perPageNum))
+    updatePipelinePanel(renderPipelineListContent(
+      listResult.pipelines,
+      listResult.pageInfo.page,
+      listResult.pageInfo.perPage,
+      undefined,
+      listResult.pageInfo
+    ))
 
     // 下面太耗性能 先注释掉  使用点击的方式自行查看
     // enrichPipelineSummaries(yunxiaoPanelContext, pipelines)
@@ -219,22 +257,36 @@ function updatePipelinePanelRow(pipelineId: number, rowHtml: string) {
 }
 
 
-async function refreshPipelineList(ctx: YunxiaoPanelContext) {
+async function loadPipelineListPage(ctx: YunxiaoPanelContext, page: number) {
   if (!pipelinePanel) return
-  updatePipelinePanel('<div style="padding:16px;color:#D1D5DB;">正在刷新流水线列表...</div>')
+  updatePipelinePanel('<div style="padding:16px;color:#D1D5DB;">正在加载流水线列表...</div>')
   try {
-    const pipelines = await fetchPipelineList(ctx.flowBaseUrl, ctx.token, ctx.page, ctx.perPage)
-    ctx.pipelines = pipelines
+    const listResult = await fetchPipelineList(ctx.flowBaseUrl, ctx.token, page, ctx.perPage)
+    ctx.page = listResult.pageInfo.page
+    ctx.perPage = listResult.pageInfo.perPage
+    ctx.total = listResult.pageInfo.total
+    ctx.totalPages = listResult.pageInfo.totalPages
+    ctx.pipelines = listResult.pipelines
     pipelinePanel.title = '云效流水线列表'
-    updatePipelinePanel(renderPipelineListContent(pipelines, ctx.page, ctx.perPage))
+    updatePipelinePanel(renderPipelineListContent(
+      listResult.pipelines,
+      listResult.pageInfo.page,
+      listResult.pageInfo.perPage,
+      undefined,
+      listResult.pageInfo
+    ))
   } catch (error: unknown) {
     updatePipelinePanel(formatPipelineLoadError(error))
   }
 }
 
+async function refreshPipelineList(ctx: YunxiaoPanelContext) {
+  await loadPipelineListPage(ctx, ctx.page)
+}
 
 
-async function handlePipelinePanelMessage(message: { command?: string; pipelineId?: number; jobId?: number }) {
+
+async function handlePipelinePanelMessage(message: { command?: string; pipelineId?: number; jobId?: number; searchValue?: string; page?: number }) {
   if (!pipelinePanel || !yunxiaoPanelContext) {
     vscode.window.showWarningMessage('流水线面板尚未就绪，请稍后重试。')
     return
@@ -248,6 +300,7 @@ async function handlePipelinePanelMessage(message: { command?: string; pipelineI
       const pipelineName = pipeline?.pipelineName || String(pipelineId)
       updatePipelinePanel('<div style="padding:16px;color:#D1D5DB;">正在加载流水线详情...</div>')
       const detail = await loadPipelineDetailView(yunxiaoPanelContext, pipelineId, pipelineName)
+      console.log('--------detail', detail)
       yunxiaoPanelContext.current = {
         pipelineId,
         pipelineName: detail.pipelineName,
@@ -289,18 +342,10 @@ async function handlePipelinePanelMessage(message: { command?: string; pipelineI
       updatePipelinePanel(renderPipelineListContent(
         yunxiaoPanelContext.pipelines,
         yunxiaoPanelContext.page,
-        yunxiaoPanelContext.perPage
+        yunxiaoPanelContext.perPage,
+        undefined,
+        buildPageInfoFromContext(yunxiaoPanelContext)
       ))
-      // enrichPipelineSummaries(yunxiaoPanelContext, yunxiaoPanelContext.pipelines)
-      //   .then(() => {
-      //     if (!pipelinePanel || !yunxiaoPanelContext) return
-      //     updatePipelinePanel(renderPipelineListContent(
-      //       yunxiaoPanelContext.pipelines,
-      //       yunxiaoPanelContext.page,
-      //       yunxiaoPanelContext.perPage
-      //     ))
-      //   })
-      //   .catch(() => {})
       return
     }
 
@@ -322,35 +367,109 @@ async function handlePipelinePanelMessage(message: { command?: string; pipelineI
       return
     }
 
+    if (message.command === 'goToPage') {
+      const page = Number(message.page)
+      if (!Number.isInteger(page) || page < 1) return
+      if (yunxiaoPanelContext.totalPages > 0 && page > yunxiaoPanelContext.totalPages) return
+      yunxiaoPanelContext.current = undefined
+      await loadPipelineListPage(yunxiaoPanelContext, page)
+      return
+    }
+
+    if (message.command === 'searchById') {
+      const raw = String(message.searchValue ?? '').trim()
+      const pipelineId = Number(raw)
+      if (!raw || !Number.isInteger(pipelineId) || pipelineId <= 0) {
+        vscode.window.showWarningMessage('请输入有效的流水线 ID（正整数）。')
+        return
+      }
+      updatePipelinePanel(`<div style="padding:16px;color:#D1D5DB;">正在搜索流水线 ${pipelineId}...</div>`)
+      let result = yunxiaoPanelContext.pipelines.find(item => item.pipelineId === pipelineId)
+      if (!result) {
+        try {
+          result = await buildPipelineSummary(yunxiaoPanelContext, pipelineId)
+        } catch {
+          result = undefined
+        }
+      }
+      pipelinePanel.title = '云效流水线列表'
+      updatePipelinePanel(renderPipelineListContent(
+        result ? [result] : [],
+        yunxiaoPanelContext.page,
+        yunxiaoPanelContext.perPage,
+        pipelineId
+      ))
+      return
+    }
+
+    if (message.command === 'clearPipelineSearch') {
+      pipelinePanel.title = '云效流水线列表'
+      updatePipelinePanel(renderPipelineListContent(
+        yunxiaoPanelContext.pipelines,
+        yunxiaoPanelContext.page,
+        yunxiaoPanelContext.perPage,
+        undefined,
+        buildPageInfoFromContext(yunxiaoPanelContext)
+      ))
+      return
+    }
+
     if (message.command === 'passCheckpoint' || message.command === 'refuseCheckpoint') {
       const current = yunxiaoPanelContext.current
-      const jobId = Number(message.jobId)
-      if (!current?.pipelineRunId || !jobId) {
+      const requestedJobId = Number(message.jobId)
+      if (!current?.pipelineRunId || !requestedJobId) {
         vscode.window.showWarningMessage('缺少流水线运行信息，请刷新详情后重试。')
         return
       }
-      const picked = await vscode.window.showWarningMessage(
-        `确认放行人工卡点，继续执行后续流程？`,
-        { modal: true },
-        '放行'
+      const detail = await loadPipelineDetailView(yunxiaoPanelContext, current.pipelineId, current.pipelineName)
+      const matchedCheckpoint = detail.layout?.checkpoints.find(item =>
+        item.actionJob?.id === requestedJobId || item.job?.id === requestedJobId
       )
-      if (picked !== '放行') return
-      await yunxiaoPipelineCheckpointAction(
+      const passJob = matchedCheckpoint?.actionJob
+        || resolveCheckpointActionJobFromRun(
+          detail.latestRun?.stages || [],
+          requestedJobId,
+          detail.layout?.checkpoints,
+          detail.layout?.flowYaml
+        )
+      if (!passJob?.id) {
+        vscode.window.showErrorMessage('未找到可操作的卡点/部署任务，请刷新后在云效控制台确认。')
+        return
+      }
+
+      const confirmLabel = matchedCheckpoint?.passMode === 'start_job'
+        ? '开始部署'
+        : matchedCheckpoint?.passMode === 'resume_deploy'
+          ? '继续部署'
+          : '放行'
+      const pickedLabel = await vscode.window.showWarningMessage(
+        `确认${confirmLabel}，继续执行后续流程？`,
+        { modal: true },
+        confirmLabel
+      )
+      if (pickedLabel !== confirmLabel) return
+
+      if (matchedCheckpoint && !matchedCheckpoint.passMode) {
+        finalizeCheckpointPassMeta(matchedCheckpoint, detail.layout?.flowYaml || '')
+      }
+
+      await executeCheckpointPass(
         yunxiaoPanelContext,
         current.pipelineId,
         current.pipelineRunId,
-        jobId,
-        true
+        matchedCheckpoint,
+        passJob,
+        detail.layout?.flowYaml
       )
-      vscode.window.showInformationMessage('已放行人工卡点')
+      vscode.window.showInformationMessage(`已${confirmLabel}`)
       updatePipelinePanel('<div style="padding:16px;color:#D1D5DB;">正在刷新...</div>')
-      const detail = await loadPipelineDetailView(yunxiaoPanelContext, current.pipelineId, current.pipelineName)
+      const refreshed = await loadPipelineDetailView(yunxiaoPanelContext, current.pipelineId, current.pipelineName)
       yunxiaoPanelContext.current = {
         pipelineId: current.pipelineId,
-        pipelineName: detail.pipelineName,
-        pipelineRunId: detail.latestRun?.pipelineRunId
+        pipelineName: refreshed.pipelineName,
+        pipelineRunId: refreshed.latestRun?.pipelineRunId
       }
-      updatePipelinePanel(renderPipelineDetailContent(detail))
+      updatePipelinePanel(renderPipelineDetailContent(refreshed))
     }
   } catch (error: unknown) {
     const text = error instanceof Error ? error.message : String(error)
@@ -361,8 +480,8 @@ async function handlePipelinePanelMessage(message: { command?: string; pipelineI
   }
 }
 
-async function yunxiaoRequest(baseUrl: string, token: string, path: string, method: 'GET' | 'POST' = 'GET') {
-  const response = await fetch(`${baseUrl}${path}`, {
+async function yunxiaoRequest(baseUrl: string, token: string, path: string, method: 'GET' | 'POST' | 'PUT' = 'GET') {
+  const response = await fetchWithDebug(`${baseUrl}${path}`, {
     method,
     headers: {
       'Content-Type': 'application/json',
@@ -382,9 +501,11 @@ async function yunxiaoRequest(baseUrl: string, token: string, path: string, meth
 }
 
 async function loadPipelineDetailView(ctx: YunxiaoPanelContext, pipelineId: number, pipelineName: string): Promise<PipelineDetailView> {
+  // 获取流水线详情
   const pipeline = await yunxiaoRequest(ctx.flowBaseUrl, ctx.token, `/pipelines/${pipelineId}`) as Record<string, unknown> | undefined
   let latestRun: PipelineRunDetail | undefined
   try {
+    // 获取最近一次流水线运行信息
     const run = await yunxiaoRequest(
       ctx.flowBaseUrl,
       ctx.token,
@@ -393,6 +514,7 @@ async function loadPipelineDetailView(ctx: YunxiaoPanelContext, pipelineId: numb
     if (run && run.pipelineRunId != null) {
       const pipelineRunId = Number(run.pipelineRunId)
       try {
+        // 获取流水线运行实例
         const fullRun = await yunxiaoRequest(
           ctx.flowBaseUrl,
           ctx.token,
@@ -408,13 +530,14 @@ async function loadPipelineDetailView(ctx: YunxiaoPanelContext, pipelineId: numb
   }
 
   const envInfo = extractEnvDeployInfo(pipeline, latestRun)
+  const flowYaml = getPipelineFlowYaml(pipeline)
   return {
     pipelineId,
     pipelineName: String(pipeline?.name || pipelineName),
     envName: typeof pipeline?.envName === 'string' ? pipeline.envName : undefined,
     latestRun,
     envInfo,
-    layout: latestRun ? buildDeployLayout(latestRun.stages || [], envInfo) : undefined
+    layout: latestRun ? buildDeployLayout(latestRun.stages || [], envInfo, flowYaml) : undefined
   }
 }
 
@@ -434,10 +557,7 @@ async function enrichPipelineSummaries(ctx: YunxiaoPanelContext, pipelines: Pipe
       item.runStatus = String(run.status || '')
       const normalized = normalizePipelineRun(run)
       item.envInfo = extractEnvDeployInfo(pipeline, normalized)
-      item.hasCheckpoint = (normalized.stages || []).some(stage =>
-        classifyStage(stage.name) === 'checkpoint' &&
-        (stage.stageInfo?.jobs || []).some(job => isCheckpointPendingJob(job))
-      )
+      item.hasCheckpoint = runHasPendingCheckpoint(normalized.stages || [])
       if (item.hasCheckpoint) {
         try {
           const fullRun = await yunxiaoRequest(
@@ -448,10 +568,7 @@ async function enrichPipelineSummaries(ctx: YunxiaoPanelContext, pipelines: Pipe
           if (fullRun) {
             const detailed = normalizePipelineRun(fullRun)
             item.envInfo = extractEnvDeployInfo(pipeline, detailed)
-            item.hasCheckpoint = (detailed.stages || []).some(stage =>
-              classifyStage(stage.name) === 'checkpoint' &&
-              (stage.stageInfo?.jobs || []).some(job => isCheckpointPendingJob(job))
-            )
+            item.hasCheckpoint = runHasPendingCheckpoint(detailed.stages || [])
           }
         } catch {
           // keep summary run result
@@ -519,18 +636,32 @@ function normalizePipelineRunJob(raw: Record<string, unknown>): PipelineRunJob {
         type: typeof action.type === 'string' ? action.type : undefined,
         disable: action.disable === true,
         name: typeof action.name === 'string' ? action.name : undefined,
-        title: typeof action.title === 'string' ? action.title : undefined
+        title: typeof action.title === 'string' ? action.title : undefined,
+        params: action.params && typeof action.params === 'object'
+          ? action.params as Record<string, unknown>
+          : undefined
       }
     })
     : []
 
   return {
-    id: Number(raw.id || 0),
+    id: parsePipelineJobId(raw),
     name: String(raw.name || '未命名任务'),
     status: String(raw.status || 'UNKNOWN'),
     params: typeof raw.params === 'string' ? raw.params : undefined,
+    jobSign: typeof raw.jobSign === 'string' ? raw.jobSign : undefined,
     actions
   }
+}
+
+function parsePipelineJobId(raw: Record<string, unknown>) {
+  const value = raw.id ?? raw.jobId
+  if (typeof value === 'number' && Number.isFinite(value)) return value
+  if (typeof value === 'string' && value.trim()) {
+    const parsed = Number(value)
+    return Number.isFinite(parsed) ? parsed : 0
+  }
+  return 0
 }
 
 // 构建单条流水线摘要（不批量请求）
@@ -558,9 +689,7 @@ async function buildPipelineSummary(ctx: YunxiaoPanelContext, pipelineId: number
 
   if (normalizedRun) {
     runStatus = normalizedRun.status
-    hasCheckpoint = (normalizedRun.stages || []).some(stage =>
-      classifyStage(stage.name) === 'checkpoint' && (stage.stageInfo?.jobs || []).some(job => isCheckpointPendingJob(job))
-    )
+    hasCheckpoint = runHasPendingCheckpoint(normalizedRun.stages || [])
   }
 
   const envInfo = extractEnvDeployInfo(pipeline, normalizedRun)
@@ -592,12 +721,83 @@ function envLabel(key: DeployEnvKey) {
   return ({ intranet: '内网', pre: '预发', prod: '正式' } as const)[key]
 }
 
-function classifyStage(name: string): DeployEnvKey | 'checkpoint' | 'other' {
-  if (/卡点/.test(name)) return 'checkpoint'
+function getStageName(stage: PipelineRunStage) {
+  return stage.stageInfo?.name || stage.name || '未命名阶段'
+}
+
+function isDeployLikeName(name: string) {
+  return /构建|部署|build|deploy|cdn|编译|打包|发布/i.test(name)
+}
+
+function isCheckpointStageName(name: string) {
+  if (/卡点|人工卡点|人工审批|人工审核|手动审批|发布审批|上线审批|人工确认|确认发布|门禁/.test(name)) return true
+  if (/转正式|至正式|发正式|直发|特殊直发/.test(name) && !isDeployLikeName(name)) return true
+  return false
+}
+
+function inferEnvFromStageName(name: string): DeployEnvKey | undefined {
   if (/内网/.test(name)) return 'intranet'
+  if (/外网|预发/.test(name)) return 'pre'
+  if (/正式/.test(name)) return 'prod'
+  return undefined
+}
+
+type StagePartitionContext = {
+  envKind?: DeployEnvKey
+  previousEnv?: DeployEnvKey
+}
+
+function classifyStage(name: string): DeployEnvKey | 'checkpoint' | 'other' {
+  if (isCheckpointStageName(name)) return 'checkpoint'
+  const inferred = inferEnvFromStageName(name)
+  if (inferred) return inferred
+  return 'other'
+}
+
+function resolveStageKind(stage: PipelineRunStage): DeployEnvKey | 'checkpoint' | 'other' {
+  const name = getStageName(stage)
+  if (isCheckpointStageName(name)) return 'checkpoint'
+
+  const jobs = stage.stageInfo?.jobs || []
+  const envHint = inferEnvFromStageName(name)
+  const checkpointJobs = jobs.filter(job => isManualCheckpointJob(job, { envKind: envHint }))
+  const deployJobs = jobs.filter(job => !isManualCheckpointJob(job, { envKind: envHint }) && isDeployLikeName(job.name))
+
+  // 仅有卡点任务、无构建/部署任务时，即使阶段名含「预发/正式」也视为卡点
+  if (checkpointJobs.length && !deployJobs.length) return 'checkpoint'
+
+  if (/内网/.test(name)) return 'intranet'
+  if (/外网/.test(name) && isDeployLikeName(name)) return 'pre'
   if (/预发/.test(name)) return 'pre'
   if (/正式/.test(name)) return 'prod'
   return 'other'
+}
+
+function stageHasPendingCheckpoint(stage: PipelineRunStage, previousEnv?: DeployEnvKey) {
+  const name = getStageName(stage)
+  const kind = resolveStageKind(stage)
+  const envKind = (kind === 'intranet' || kind === 'pre' || kind === 'prod') ? kind : inferEnvFromStageName(name)
+  const context: StagePartitionContext = { envKind, previousEnv }
+
+  if (kind === 'checkpoint') {
+    return (stage.stageInfo?.jobs || []).some(job => isCheckpointPendingJob(job))
+  }
+  if ((stage.stageInfo?.status || '').toUpperCase() === 'SWITCH_MANUAL') {
+    return (stage.stageInfo?.jobs || []).some(job => job.status.toUpperCase() !== 'SKIP')
+  }
+  return partitionStageJobs(stage, context).checkpointJobs.some(job => isCheckpointPendingJob(job))
+}
+
+function runHasPendingCheckpoint(stages: PipelineRunStage[]) {
+  let previousEnv: DeployEnvKey | undefined
+  for (const stage of stages) {
+    if (stageHasPendingCheckpoint(stage, previousEnv)) return true
+    const kind = resolveStageKind(stage)
+    if (kind === 'intranet' || kind === 'pre' || kind === 'prod') {
+      previousEnv = kind
+    }
+  }
+  return false
 }
 
 function getPipelineFlowYaml(pipeline: Record<string, unknown> | undefined) {
@@ -608,7 +808,7 @@ function getPipelineFlowYaml(pipeline: Record<string, unknown> | undefined) {
 function envKeywords(): Array<[DeployEnvKey, string[]]> {
   return [
     ['intranet', ['内网', 'intranet', 'dev', 'develop']],
-    ['pre', ['预发', 'pre', 'staging', 'uat', 'master_bug']],
+    ['pre', ['预发', '外网', 'pre', 'staging', 'uat', 'master_bug']],
     ['prod', ['正式', 'prod', 'production', 'master']],
   ]
 }
@@ -616,7 +816,7 @@ function envKeywords(): Array<[DeployEnvKey, string[]]> {
 function matchEnvFromText(text: string): DeployEnvKey | undefined {
   const lower = text.toLowerCase()
   if (/内网|intranet|\bdev\b|develop/.test(lower)) return 'intranet'
-  if (/预发|\bpre\b|staging|uat|master_bug/.test(lower)) return 'pre'
+  if (/预发|外网|\bpre\b|staging|uat|master_bug/.test(lower)) return 'pre'
   if (/正式|\bprod\b|production|\bmaster\b/.test(lower) && !/master_bug/.test(lower)) return 'prod'
   return undefined
 }
@@ -718,7 +918,7 @@ function extractEnvDeployFromRunStages(stages: PipelineRunStage[]): EnvDeployMap
   const branchKeys = ['branch', 'BRANCH', 'branchName', 'BRANCH_NAME', 'gitBranch', 'gitRef']
 
   for (const stage of stages) {
-    const env = classifyStage(stage.name)
+    const env = classifyStage(getStageName(stage))
     if (env === 'other' || env === 'checkpoint') continue
     for (const job of stage.stageInfo?.jobs || []) {
       if (!job.params) continue
@@ -781,65 +981,183 @@ function aggregateStageStatus(stages: PipelineRunStage[]) {
 }
 
 function inferCheckpointTarget(stageName: string, previousEnv?: DeployEnvKey) {
+  if (/正式|至正式|转正式|发正式|直发/.test(stageName)) return { key: 'prod' as DeployEnvKey, label: '正式' }
   if (/预发/.test(stageName)) return { key: 'pre' as DeployEnvKey, label: '预发' }
-  if (/正式/.test(stageName)) return { key: 'prod' as DeployEnvKey, label: '正式' }
+  if (/内网/.test(stageName)) return { key: 'pre' as DeployEnvKey, label: '预发' }
   if (previousEnv === 'intranet') return { key: 'pre' as DeployEnvKey, label: '预发' }
   if (previousEnv === 'pre') return { key: 'prod' as DeployEnvKey, label: '正式' }
   return { key: 'pre' as DeployEnvKey, label: '预发' }
 }
 
+function inferJobTargetEnv(job: PipelineRunJob, stage?: PipelineRunStage): DeployEnvKey | undefined {
+  const text = [job.name, job.jobSign || '', stage ? getStageName(stage) : ''].join(' ')
+  if (/deployprod|正式环境|正式部署|至正式|转正式|发正式/i.test(text)) return 'prod'
+  if (/deploypre|预发环境|预发部署|外网环境|外网部署/i.test(text)) return 'pre'
+  if (/deployintranet|内网环境|内网部署/i.test(text)) return 'intranet'
+  return inferEnvFromStageName(text)
+}
+
+function isCheckpointJobCompleted(job: PipelineRunJob) {
+  const status = job.status.toUpperCase()
+  return status === 'SUCCESS' || status === 'SKIP' || status === 'CANCELED'
+}
+
+function jobMatchesCheckpointEnv(job: PipelineRunJob, stage: PipelineRunStage | undefined, targetEnv: DeployEnvKey) {
+  const jobEnv = inferJobTargetEnv(job, stage)
+  if (jobEnv) return jobEnv === targetEnv
+  if (stage) return inferCheckpointTarget(getStageName(stage)).key === targetEnv
+  return false
+}
+
+function isActionJobCandidate(job: PipelineRunJob, stage: PipelineRunStage | undefined, flowYaml: string) {
+  if (!isJobAwaitingManualPass(job, flowYaml) && !isManualDeployAwaiting(job)) return false
+  return hasValidateAction(job)
+    || isNamedManualValidateJob(job)
+    || isDeployEntryGateJob(job, undefined, stage)
+    || isVmDeployDrivenManual(job, flowYaml)
+    || canStartJobAction(job)
+    || hasStartJobAction(job)
+}
+
 function findCheckpointJob(stage: PipelineRunStage) {
   const jobs = stage.stageInfo?.jobs || []
   return jobs.find(job => isCheckpointPendingJob(job) && job.status.toUpperCase() !== 'SKIP')
-    || jobs.find(job => /标准|人工|审批|卡点/.test(job.name) && job.status.toUpperCase() !== 'SKIP')
+    || jobs.find(job => isManualCheckpointJob(job) && job.status.toUpperCase() !== 'SKIP')
     || jobs.find(job => job.status.toUpperCase() !== 'SKIP')
 }
 
-function buildDeployLayout(stages: PipelineRunStage[], envInfo: EnvDeployMap): PipelineDeployLayout {
+function pushCheckpointBlock(
+  checkpoints: PipelineCheckpointBlock[],
+  flowBlocks: PipelineDeployFlowBlock[],
+  stage: PipelineRunStage,
+  job: PipelineRunJob | undefined,
+  currentEnv: DeployEnvKey | undefined,
+  stageName?: string
+) {
+  const label = stageName || getStageName(stage)
+  const target = inferCheckpointTarget(label, currentEnv)
+  const checkpoint: PipelineCheckpointBlock = {
+    stageName: label,
+    stageStatus: stage.stageInfo?.status || job?.status || 'UNKNOWN',
+    targetEnv: target.key,
+    targetLabel: target.label,
+    job,
+    active: !!(job && isCheckpointPendingJob(job))
+  }
+  checkpoints.push(checkpoint)
+  flowBlocks.push({ kind: 'checkpoint', checkpoint })
+}
+
+function buildDeployLayout(stages: PipelineRunStage[], envInfo: EnvDeployMap, flowYaml = ''): PipelineDeployLayout {
   const envGroups: PipelineEnvGroup[] = []
   const checkpoints: PipelineCheckpointBlock[] = []
+  const flowBlocks: PipelineDeployFlowBlock[] = []
   let currentEnv: DeployEnvKey | undefined
   let currentGroup: PipelineEnvGroup | undefined
 
+  const flushCurrentGroup = () => {
+    if (!currentGroup) return
+    envGroups.push(currentGroup)
+    flowBlocks.push({ kind: 'env', group: currentGroup })
+    currentGroup = undefined
+  }
+
+  const appendEnvStage = (stage: PipelineRunStage, jobs: PipelineRunJob[]) => {
+    if (!jobs.length) return
+    currentGroup!.stages.push({
+      ...stage,
+      name: getStageName(stage),
+      stageInfo: stage.stageInfo ? { ...stage.stageInfo, jobs } : undefined
+    })
+    currentGroup!.status = aggregateStageStatus(currentGroup!.stages)
+  }
+
   for (const stage of stages) {
-    const kind = classifyStage(stage.name)
+    const kind = resolveStageKind(stage)
     if (kind === 'checkpoint') {
-      if (currentGroup) {
-        envGroups.push(currentGroup)
-        currentGroup = undefined
-      }
+      flushCurrentGroup()
       const job = findCheckpointJob(stage)
-      const target = inferCheckpointTarget(stage.name, currentEnv)
-      checkpoints.push({
-        stageName: stage.name,
-        stageStatus: stage.stageInfo?.status || 'UNKNOWN',
-        targetEnv: target.key,
-        targetLabel: target.label,
-        job,
-        active: !!job && isCheckpointPendingJob(job)
-      })
+      pushCheckpointBlock(checkpoints, flowBlocks, stage, job, currentEnv)
       continue
     }
 
     if (kind === 'intranet' || kind === 'pre' || kind === 'prod') {
+      const previousEnv = currentEnv
       currentEnv = kind
-      if (!currentGroup || currentGroup.key !== kind) {
-        if (currentGroup) envGroups.push(currentGroup)
+      const partitionContext: StagePartitionContext = { envKind: kind, previousEnv }
+      const { deployJobs, checkpointJobs } = partitionStageJobs(stage, partitionContext)
+      const orderedJobs = stage.stageInfo?.jobs || []
+      const firstCheckpointIdx = orderedJobs.findIndex(job => isManualCheckpointJob(job, partitionContext))
+      const firstDeployIdx = orderedJobs.findIndex(job => !isManualCheckpointJob(job, partitionContext))
+      const checkpointFirst = checkpointJobs.length > 0 && deployJobs.length > 0
+        && firstCheckpointIdx >= 0
+        && (firstDeployIdx < 0 || firstCheckpointIdx < firstDeployIdx)
+
+      if (checkpointFirst) {
+        flushCurrentGroup()
+        for (const job of checkpointJobs) {
+          const label = isDeployLikeName(job.name) ? '人工卡点' : (job.name || getStageName(stage))
+          pushCheckpointBlock(checkpoints, flowBlocks, stage, job, previousEnv, label)
+        }
+      }
+
+      if (deployJobs.length) {
+        if (!currentGroup || currentGroup.key !== kind) {
+          flushCurrentGroup()
+          currentGroup = {
+            key: kind,
+            label: envLabel(kind),
+            branch: envInfo[kind]?.branch,
+            stages: [],
+            status: 'INIT'
+          }
+        }
+        appendEnvStage(stage, deployJobs)
+      }
+
+      if (!checkpointFirst && checkpointJobs.length) {
+        flushCurrentGroup()
+        for (const job of checkpointJobs) {
+          if (isDeployLikeName(job.name) && !hasValidateAction(job) && !/标准|人工|审批|卡点/.test(job.name)) {
+            const hasReal = checkpointJobs.some(item => item !== job && (hasValidateAction(item) || !isDeployLikeName(item.name)))
+            if (hasReal) continue
+          }
+          const label = isDeployLikeName(job.name) ? '人工卡点' : (job.name || getStageName(stage))
+          pushCheckpointBlock(checkpoints, flowBlocks, stage, job, previousEnv, label)
+        }
+      }
+      continue
+    }
+
+    // 外网构建等未直接匹配环境的阶段
+    const inferredEnv = inferEnvFromStageName(getStageName(stage))
+    const otherContext: StagePartitionContext = { envKind: inferredEnv, previousEnv: currentEnv }
+    const { deployJobs, checkpointJobs } = partitionStageJobs(stage, otherContext)
+    if (checkpointJobs.length) {
+      flushCurrentGroup()
+      for (const job of checkpointJobs) {
+        pushCheckpointBlock(checkpoints, flowBlocks, stage, job, currentEnv, job.name || getStageName(stage))
+      }
+    }
+    if (deployJobs.length && inferredEnv) {
+      if (!currentGroup || currentGroup.key !== inferredEnv) {
+        flushCurrentGroup()
+        currentEnv = inferredEnv
         currentGroup = {
-          key: kind,
-          label: envLabel(kind),
-          branch: envInfo[kind]?.branch,
+          key: inferredEnv,
+          label: envLabel(inferredEnv),
+          branch: envInfo[inferredEnv]?.branch,
           stages: [],
           status: 'INIT'
         }
       }
-      currentGroup.stages.push(stage)
-      currentGroup.status = aggregateStageStatus(currentGroup.stages)
+      appendEnvStage(stage, deployJobs)
     }
   }
 
-  if (currentGroup) envGroups.push(currentGroup)
-  return { envGroups, checkpoints, envInfo }
+  flushCurrentGroup()
+  linkCheckpointActionJobs(stages, checkpoints, flowYaml)
+  return { envGroups, checkpoints, flowBlocks, envInfo, flowYaml }
 }
 
 function renderBranchTag(branch?: string) {
@@ -874,18 +1192,45 @@ function isCheckpointPendingJob(job: PipelineRunJob) {
   return isActiveManualCheckpoint(job)
 }
 
-async function yunxiaoPipelineCheckpointAction(
+async function executeCheckpointPass(
   ctx: YunxiaoPanelContext,
   pipelineId: number,
   pipelineRunId: number,
-  jobId: number,
-  pass: boolean
+  checkpoint: PipelineCheckpointBlock | undefined,
+  job: PipelineRunJob,
+  flowYaml = ''
 ) {
-  const action = pass ? 'pass' : 'refuse'
+  const jobId = encodeURIComponent(String(job.id))
+  const passMode = checkpoint?.passMode || resolveCheckpointPassMode(job, flowYaml)
+
+  if (passMode === 'start_job') {
+    await yunxiaoRequest(
+      ctx.flowBaseUrl,
+      ctx.token,
+      `/pipelines/${pipelineId}/pipelineRuns/${pipelineRunId}/jobs/${jobId}/start`,
+      'POST'
+    )
+    return
+  }
+
+  if (passMode === 'resume_deploy') {
+    const deployOrderId = checkpoint?.deployOrderId || getDeployOrderIdFromJob(job)
+    if (!deployOrderId) {
+      throw new Error('未找到部署单 ID，无法继续部署。请在云效部署详情中确认。')
+    }
+    await yunxiaoRequest(
+      ctx.flowBaseUrl,
+      ctx.token,
+      `/pipelines/${pipelineId}/deploy/${deployOrderId}/resume`,
+      'PUT'
+    )
+    return
+  }
+
   await yunxiaoRequest(
     ctx.flowBaseUrl,
     ctx.token,
-    `/pipelines/${pipelineId}/pipelineRuns/${pipelineRunId}/jobs/${jobId}/${action}`,
+    `/pipelines/${pipelineId}/pipelineRuns/${pipelineRunId}/jobs/${jobId}/pass`,
     'POST'
   )
 }
@@ -922,6 +1267,308 @@ function isActiveManualCheckpoint(job: PipelineRunJob) {
   return canPassCheckpoint(job) || canRefuseCheckpoint(job)
 }
 
+function isManualValidateJobParams(params?: string) {
+  if (!params) return false
+  try {
+    const text = JSON.stringify(JSON.parse(params)).toLowerCase()
+    return /manualvalidate|manual.?validate|人工卡点|pipelinevalidate|validateplugin|manualcheck|vmdeploy/i.test(text)
+  } catch {
+    return /manualvalidate|人工卡点|pipelinevalidate/i.test(params)
+  }
+}
+
+function isDeployEntryGateJob(job: PipelineRunJob, context?: StagePartitionContext, stage?: PipelineRunStage) {
+  const status = job.status.toUpperCase()
+  if (status !== 'SWITCH_MANUAL' && status !== 'WAITING') return false
+  if (!isDeployLikeName(job.name)) return false
+  if (stage && (stage.stageInfo?.jobs || []).some(other =>
+    other !== job
+    && other.status.toUpperCase() !== 'SKIP'
+    && !isDeployLikeName(other.name)
+    && isCheckpointPendingJob(other)
+  )) {
+    return false
+  }
+  if (context?.envKind === 'prod' && context?.previousEnv === 'pre') return true
+  if (context?.envKind === 'pre' && context?.previousEnv === 'intranet') return true
+  return false
+}
+
+function isManualCheckpointJob(job: PipelineRunJob, context?: StagePartitionContext, stage?: PipelineRunStage) {
+  const status = job.status.toUpperCase()
+  if (status === 'SKIP') return false
+  if (hasValidateAction(job) || canPassCheckpoint(job) || canRefuseCheckpoint(job)) return true
+  if (isManualValidateJobParams(job.params) && (status === 'SWITCH_MANUAL' || status === 'WAITING' || status === 'RUNNING')) {
+    return true
+  }
+  if (isDeployEntryGateJob(job, context, stage)) return true
+  if (status === 'SWITCH_MANUAL' || status === 'WAITING') {
+    return /标准|人工|审批|卡点|直发|validate|gate|确认/i.test(job.name)
+  }
+  return false
+}
+
+function partitionStageJobs(stage: PipelineRunStage, context?: StagePartitionContext) {
+  const jobs = stage.stageInfo?.jobs || []
+  const deployJobs: PipelineRunJob[] = []
+  const checkpointJobs: PipelineRunJob[] = []
+  for (const job of jobs) {
+    if (isManualCheckpointJob(job, context, stage)) checkpointJobs.push(job)
+    else deployJobs.push(job)
+  }
+  return { deployJobs, checkpointJobs }
+}
+
+function isNamedManualValidateJob(job: PipelineRunJob) {
+  return /标准卡点|人工卡点|人工审批|manual/i.test(job.name) || isManualValidateJobParams(job.params)
+}
+
+function isJobAwaitingManualPass(job: PipelineRunJob, flowYaml = '') {
+  const status = job.status.toUpperCase()
+  if (status === 'SKIP' || status === 'SUCCESS') return false
+  if (hasValidateAction(job)) {
+    return status === 'SWITCH_MANUAL' || status === 'WAITING' || status === 'RUNNING' || status === 'INIT'
+  }
+  if (isVmDeployDrivenManual(job, flowYaml)) {
+    return isManualDeployAwaiting(job)
+  }
+  return isNamedManualValidateJob(job) && (status === 'SWITCH_MANUAL' || status === 'WAITING')
+}
+
+function collectManualValidateJobs(stages: PipelineRunStage[]) {
+  const jobs: PipelineRunJob[] = []
+  for (const stage of stages) {
+    for (const job of stage.stageInfo?.jobs || []) {
+      if (job.status.toUpperCase() === 'SKIP') continue
+      if (hasValidateAction(job)) jobs.push(job)
+    }
+  }
+  return jobs
+}
+
+function escapeRegExp(text: string) {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+function isJobDrivenManualInYaml(flowYaml: string, jobName: string) {
+  if (!flowYaml || !jobName) return false
+  const escaped = escapeRegExp(jobName)
+  return new RegExp(`name:\\s*${escaped}[\\s\\S]{0,800}?driven:\\s*manual`, 'i').test(flowYaml)
+    || new RegExp(`driven:\\s*manual[\\s\\S]{0,800}?name:\\s*${escaped}`, 'i').test(flowYaml)
+}
+
+function isJobVmDeployInYaml(flowYaml: string, jobName: string) {
+  if (!flowYaml || !jobName) return false
+  const escaped = escapeRegExp(jobName)
+  return new RegExp(`name:\\s*${escaped}[\\s\\S]{0,800}?component:\\s*VMDeploy`, 'i').test(flowYaml)
+    || new RegExp(`component:\\s*VMDeploy[\\s\\S]{0,800}?name:\\s*${escaped}`, 'i').test(flowYaml)
+}
+
+function isVmDeployJob(job: PipelineRunJob, flowYaml: string) {
+  if (isJobVmDeployInYaml(flowYaml, job.name)) return true
+  if (!job.params) return false
+  return /vmdeploy|machinegroup|pausestrategy|pausetype|firstbatchpause|artifactdownloadpath/i.test(job.params)
+}
+
+function hasStartJobAction(job: PipelineRunJob) {
+  return (job.actions || []).some(action => {
+    const type = (action.type || '').toLowerCase()
+    return type.includes('startpipelinejobrun') || type.includes('executepipelinejobrun')
+  })
+}
+
+function canStartJobAction(job: PipelineRunJob) {
+  return (job.actions || []).some(action => {
+    const type = (action.type || '').toLowerCase()
+    return (type.includes('startpipelinejobrun') || type.includes('executepipelinejobrun')) && action.disable !== true
+  })
+}
+
+function getDeployOrderIdFromJob(job: PipelineRunJob) {
+  for (const action of job.actions || []) {
+    const type = (action.type || '').toLowerCase()
+    if (!type.includes('getvmdeployorder') || !action.params) continue
+    const id = action.params.deployOrderId
+    if (typeof id === 'number' && Number.isFinite(id)) return id
+    if (typeof id === 'string' && id.trim()) {
+      const parsed = Number(id)
+      if (Number.isFinite(parsed)) return parsed
+    }
+  }
+  if (!job.params) return undefined
+  try {
+    const parsed = JSON.parse(job.params) as Record<string, unknown>
+    const id = parsed.deployOrderId
+    if (typeof id === 'number' && Number.isFinite(id)) return id
+    if (typeof id === 'string' && id.trim()) {
+      const num = Number(id)
+      if (Number.isFinite(num)) return num
+    }
+  } catch {
+    const matched = job.params.match(/deployOrderId["']?\s*[:=]\s*["']?(\d+)/i)
+    if (matched?.[1]) return Number(matched[1])
+  }
+  return undefined
+}
+
+function isVmDeployDrivenManual(job: PipelineRunJob, flowYaml: string) {
+  if (!isVmDeployJob(job, flowYaml)) return false
+  if (isJobDrivenManualInYaml(flowYaml, job.name)) return true
+  if (hasStartJobAction(job)) return true
+  const status = job.status.toUpperCase()
+  return status === 'WAITING' || status === 'INIT' || status === 'SWITCH_MANUAL'
+}
+
+function isManualDeployAwaiting(job: PipelineRunJob) {
+  const status = job.status.toUpperCase()
+  return status === 'WAITING' || status === 'INIT' || status === 'SWITCH_MANUAL'
+    || status === 'PAUSE' || status === 'PAUSED' || status === 'RUNNING'
+}
+
+function resolveCheckpointPassMode(job: PipelineRunJob, flowYaml: string): CheckpointPassMode {
+  const deployOrderId = getDeployOrderIdFromJob(job)
+  const status = job.status.toUpperCase()
+  if (deployOrderId && (status === 'RUNNING' || status === 'PAUSE' || status === 'PAUSED')) {
+    return 'resume_deploy'
+  }
+  if (canPassCheckpoint(job) || (hasValidateAction(job) && !isVmDeployDrivenManual(job, flowYaml))) {
+    return 'validate'
+  }
+  if (isVmDeployDrivenManual(job, flowYaml) || canStartJobAction(job) || hasStartJobAction(job)) {
+    return 'start_job'
+  }
+  return 'validate'
+}
+
+function finalizeCheckpointPassMeta(checkpoint: PipelineCheckpointBlock, flowYaml: string) {
+  if (checkpoint.job && isCheckpointJobCompleted(checkpoint.job)) {
+    checkpoint.active = false
+    checkpoint.actionJob = undefined
+    checkpoint.passMode = undefined
+    checkpoint.deployOrderId = undefined
+    return
+  }
+
+  const job = checkpoint.actionJob
+  if (!job) {
+    checkpoint.active = false
+    checkpoint.passMode = undefined
+    checkpoint.deployOrderId = undefined
+    return
+  }
+
+  checkpoint.passMode = resolveCheckpointPassMode(job, flowYaml)
+  checkpoint.deployOrderId = getDeployOrderIdFromJob(job)
+
+  const passMode = checkpoint.passMode
+  if (passMode === 'start_job' || passMode === 'resume_deploy') {
+    checkpoint.active = isManualDeployAwaiting(job)
+  } else if (checkpoint.job && isCheckpointPendingJob(checkpoint.job)) {
+    checkpoint.active = true
+  } else {
+    checkpoint.active = canPassCheckpoint(job)
+      || (hasValidateAction(job) && isJobAwaitingManualPass(job, flowYaml))
+      || (isNamedManualValidateJob(job) && isJobAwaitingManualPass(job, flowYaml))
+  }
+}
+
+function collectAllPassCandidateJobs(stages: PipelineRunStage[], flowYaml = '') {
+  const result: PipelineRunJob[] = []
+  const seen = new Set<number>()
+  for (const stage of stages) {
+    for (const job of stage.stageInfo?.jobs || []) {
+      if (job.status.toUpperCase() === 'SKIP') continue
+      if (!isJobAwaitingManualPass(job, flowYaml) && !isManualDeployAwaiting(job)) continue
+      if (!hasValidateAction(job) && !isNamedManualValidateJob(job) && !isDeployEntryGateJob(job, undefined, stage)
+        && !isVmDeployDrivenManual(job, flowYaml)) {
+        continue
+      }
+      if (seen.has(job.id)) continue
+      seen.add(job.id)
+      result.push(job)
+    }
+  }
+  return result
+}
+
+function findActionJobForCheckpoint(
+  stages: PipelineRunStage[],
+  checkpoint: PipelineCheckpointBlock,
+  used: Set<number>,
+  flowYaml = ''
+) {
+  const candidates: Array<{ job: PipelineRunJob; stage: PipelineRunStage }> = []
+  for (const stage of stages) {
+    for (const job of stage.stageInfo?.jobs || []) {
+      if (used.has(job.id) || job.status.toUpperCase() === 'SKIP') continue
+      if (!jobMatchesCheckpointEnv(job, stage, checkpoint.targetEnv)) continue
+      if (!isActionJobCandidate(job, stage, flowYaml)) continue
+      candidates.push({ job, stage })
+    }
+  }
+
+  const pick = (predicate: (item: { job: PipelineRunJob; stage: PipelineRunStage }) => boolean) =>
+    candidates.find(predicate)?.job
+
+  return pick(item => hasValidateAction(item.job) && isJobAwaitingManualPass(item.job, flowYaml))
+    || pick(item => isVmDeployDrivenManual(item.job, flowYaml) && isManualDeployAwaiting(item.job))
+    || pick(item => isNamedManualValidateJob(item.job) && isJobAwaitingManualPass(item.job, flowYaml))
+    || pick(item => isDeployEntryGateJob(item.job, undefined, item.stage))
+    || candidates[0]?.job
+}
+
+function linkCheckpointActionJobs(stages: PipelineRunStage[], checkpoints: PipelineCheckpointBlock[], flowYaml = '') {
+  const used = new Set<number>()
+
+  for (const checkpoint of checkpoints) {
+    checkpoint.actionJob = undefined
+
+    if (checkpoint.job && isCheckpointJobCompleted(checkpoint.job)) {
+      finalizeCheckpointPassMeta(checkpoint, flowYaml)
+      continue
+    }
+
+    const matched = findActionJobForCheckpoint(stages, checkpoint, used, flowYaml)
+    if (matched) {
+      checkpoint.actionJob = matched
+      used.add(matched.id)
+    } else if (checkpoint.job && isCheckpointPendingJob(checkpoint.job)) {
+      checkpoint.actionJob = checkpoint.job
+      used.add(checkpoint.job.id)
+    }
+
+    finalizeCheckpointPassMeta(checkpoint, flowYaml)
+  }
+}
+
+function resolveCheckpointActionJobFromRun(
+  stages: PipelineRunStage[],
+  requestedJobId: number,
+  checkpoints?: PipelineCheckpointBlock[],
+  flowYaml = ''
+): PipelineRunJob | undefined {
+  const matchedBlock = checkpoints?.find(item =>
+    item.actionJob?.id === requestedJobId || item.job?.id === requestedJobId
+  )
+  if (matchedBlock?.actionJob?.id) {
+    return matchedBlock.actionJob
+  }
+
+  for (const job of collectManualValidateJobs(stages)) {
+    if (job.id === requestedJobId && isJobAwaitingManualPass(job, flowYaml)) return job
+  }
+
+  for (const job of collectAllPassCandidateJobs(stages, flowYaml)) {
+    if (job.id === requestedJobId) return job
+  }
+
+  if (matchedBlock?.job) {
+    return matchedBlock.job
+  }
+
+  return undefined
+}
+
 
 
 function renderPipelineStatusBadge(status: string) {
@@ -946,7 +1593,6 @@ function renderPipelineListRowLoading(pipelineId: number) {
 }
 
 function renderPipelineListRow(item: PipelineSummary) {
-  console.log('Rendering pipeline row for:', item)
   const envInfo = item.envInfo || {}
   const waiting = item.hasCheckpoint
   const rowClass = waiting ? 'pipeline-row pipeline-row-waiting' : 'pipeline-row'
@@ -969,20 +1615,70 @@ function renderPipelineListRow(item: PipelineSummary) {
     </tr>`
 }
 
-function renderPipelineListContent(pipelines: PipelineSummary[], page: number, perPage: number) {
-  if (!pipelines || pipelines.length === 0) {
+function renderPipelineSearchBar(searchId?: number) {
+  const clearButton = searchId != null
+    ? '<button type="button" class="btn-secondary" data-action="clear-search">清除搜索</button>'
+    : ''
+  return `
+    <div style="display:flex;gap:8px;align-items:center;margin-bottom:12px;">
+      <input id="pipeline-search-input" class="search-input" type="text"
+        placeholder="输入流水线 ID，回车搜索" value="${searchId ?? ''}" />
+      <button type="button" class="btn-link" style="margin-left:0;" data-action="search-by-id">搜索</button>
+      ${clearButton}
+    </div>`
+}
+
+function buildPageInfoFromContext(ctx: YunxiaoPanelContext): PipelineListPageInfo {
+  return {
+    page: ctx.page,
+    perPage: ctx.perPage,
+    total: ctx.total,
+    totalPages: ctx.totalPages
+  }
+}
+
+function renderPipelineListPagination(pageInfo: PipelineListPageInfo, itemCount: number) {
+  const { page, perPage, total, totalPages } = pageInfo
+  const hasPrev = page > 1
+  const hasNext = totalPages > 0
+    ? page < totalPages
+    : itemCount >= perPage
+  const totalLabel = total > 0 ? String(total) : '未知'
+  const totalPagesLabel = totalPages > 0 ? String(totalPages) : '?'
+
+  return `
+    <div class="pagination-bar">
+      <button type="button" class="btn-secondary" data-action="page-prev" data-page="${page - 1}"${hasPrev ? '' : ' disabled'}>上一页</button>
+      <span class="pagination-info">第 ${page} / ${totalPagesLabel} 页，共 ${totalLabel} 条，每页 ${perPage} 条</span>
+      <button type="button" class="btn-secondary" data-action="page-next" data-page="${page + 1}"${hasNext ? '' : ' disabled'}>下一页</button>
+    </div>`
+}
+
+function renderPipelineListContent(
+  pipelines: PipelineSummary[],
+  page: number,
+  perPage: number,
+  searchId?: number,
+  pageInfo?: PipelineListPageInfo
+) {
+  if ((!pipelines || pipelines.length === 0) && searchId == null) {
     return '<div style="padding:16px;color:#D1D5DB;">未查询到流水线，请检查组织 ID / token / 网络是否正确。</div>'
   }
 
-  const rows = pipelines.map(item => renderPipelineListRow(item)).join('')
+  const resolvedPageInfo: PipelineListPageInfo = pageInfo || {
+    page,
+    perPage,
+    total: pipelines.length,
+    totalPages: pipelines.length < perPage ? page : 0
+  }
 
-  return `
-    <div style="padding:16px;">
-      <h2 style="margin:0 0 12px 0;color:#fff;">云效流水线列表</h2>
-      <div style="margin-bottom:16px;color:#9CA3AF;font-size:13px; display:flex; justify-content:space-between;">
-        <div>页码：${page}，每页：${perPage}。橙色高亮行为待审批人工卡点，点击可进入操作。</div>
-        <button  data-action="refresh-list">刷新</button>
-      </div>
+  const hint = searchId != null
+    ? `搜索结果：流水线 ID ${searchId}，共 ${pipelines.length} 条。`
+    : '橙色高亮行为待审批人工卡点，点击可进入操作。'
+
+  const tableBody = pipelines.length === 0
+    ? `<div style="padding:24px;text-align:center;color:#9CA3AF;border:1px solid #334155;border-radius:10px;background:#0F172A;">未找到 ID 为 ${searchId} 的流水线，请检查 ID 是否正确。</div>`
+    : `
       <div style="overflow:auto;border:1px solid #334155;border-radius:10px;background:#0F172A;">
         <table style="width:100%;border-collapse:collapse;min-width:920px;color:#E5E7EB;font-size:13px;">
           <thead>
@@ -996,9 +1692,20 @@ function renderPipelineListContent(pipelines: PipelineSummary[], page: number, p
               <th style="padding:12px 16px;border-bottom:1px solid #1F2937;">操作</th>
             </tr>
           </thead>
-          <tbody id="sym-pipelines">${rows}</tbody>
+          <tbody id="sym-pipelines">${pipelines.map(item => renderPipelineListRow(item)).join('')}</tbody>
         </table>
+      </div>`
+
+  return `
+    <div style="padding:16px;">
+      <h2 style="margin:0 0 12px 0;color:#fff;">云效流水线列表</h2>
+      ${renderPipelineSearchBar(searchId)}
+      <div style="margin-bottom:16px;color:#9CA3AF;font-size:13px; display:flex; justify-content:space-between;align-items:center;">
+        <div>${hint}</div>
+        <button data-action="refresh-list">刷新</button>
       </div>
+      ${tableBody}
+      ${searchId == null ? renderPipelineListPagination(resolvedPageInfo, pipelines.length) : ''}
     </div>`
 }
 
@@ -1024,14 +1731,39 @@ function renderEnvStageRows(stages: PipelineRunStage[]) {
   }).join('')
 }
 
+function resolveCheckpointButtonLabel(
+  checkpoint: PipelineCheckpointBlock,
+  passMode: CheckpointPassMode | undefined,
+  actionJob?: PipelineRunJob
+) {
+  const actionEnv = actionJob ? inferJobTargetEnv(actionJob) : undefined
+  const targetLabel = actionEnv ? envLabel(actionEnv) : checkpoint.targetLabel
+  if (passMode === 'start_job') return `开始部署 → ${targetLabel}`
+  if (passMode === 'resume_deploy') return `继续部署 → ${targetLabel}`
+  return `放行 → ${targetLabel}`
+}
+
 function renderCheckpointBlock(checkpoint: PipelineCheckpointBlock) {
-  const job = checkpoint.job
-  const canPass = job && (canPassCheckpoint(job) || job.status.toUpperCase() === 'SWITCH_MANUAL' || job.status.toUpperCase() === 'WAITING')
-  const buttonHtml = checkpoint.active && job && canPass
-    ? `<button type="button" class="btn-release" data-action="pass-checkpoint" data-job-id="${job.id}">放行 → ${escapeHtml(checkpoint.targetLabel)}</button>`
-    : checkpoint.active
+  const actionJob = checkpoint.actionJob
+  const passMode = checkpoint.passMode || (actionJob ? 'validate' : undefined)
+  const buttonLabel = resolveCheckpointButtonLabel(checkpoint, passMode, actionJob)
+
+  const canPassValidate = actionJob && canPassCheckpoint(actionJob)
+  const canStart = actionJob && (
+    (passMode === 'start_job' && isManualDeployAwaiting(actionJob))
+    || (passMode === 'resume_deploy' && isManualDeployAwaiting(actionJob))
+    || canStartJobAction(actionJob)
+  )
+  const hasValidateButDisabled = actionJob && passMode === 'validate' && hasValidateAction(actionJob) && !canPassValidate
+  const canTryPass = actionJob && passMode === 'validate' && !hasValidateAction(actionJob) && isNamedManualValidateJob(actionJob)
+  
+  const buttonHtml = checkpoint.active && actionJob && (canPassValidate || canStart || canTryPass)
+    ? `<button type="button" class="btn-release" data-action="pass-checkpoint" data-job-id="${actionJob.id}">${escapeHtml(buttonLabel)}</button>`
+    : checkpoint.active && hasValidateButDisabled
       ? '<span class="checkpoint-hint">等待审批（当前账号可能无权限）</span>'
-      : '<span class="checkpoint-hint checkpoint-done">卡点已处理</span>'
+      : checkpoint.active
+        ? `<span class="checkpoint-hint">检测到待操作节点${actionJob ? `（${escapeHtml(actionJob.name)}#${actionJob.id}）` : ''}，请刷新后重试</span>`
+        : '<span class="checkpoint-hint checkpoint-done">卡点已处理</span>'
 
   return `
     <div class="checkpoint-block ${checkpoint.active ? 'checkpoint-block-active' : ''}">
@@ -1045,15 +1777,20 @@ function renderCheckpointBlock(checkpoint: PipelineCheckpointBlock) {
 }
 
 function renderPipelineDetailContent(detail: PipelineDetailView) {
+  console.log('--------renderPipel1ineDetailContent', detail)
   const run = detail.latestRun
   const layout = detail.layout
   const envInfo = detail.envInfo || {}
 
   let runSection = '<div style="padding:12px 0;color:#9CA3AF;">暂无运行记录。</div>'
   if (run && layout) {
-    const envBlocks: string[] = []
-    layout.envGroups.forEach((group, index) => {
-      envBlocks.push(`
+    console.log('--------layout', layout.flowBlocks)
+    const envBlocks = layout.flowBlocks.map(block => {
+      if (block.kind === 'checkpoint') {
+        return renderCheckpointBlock(block.checkpoint)
+      }
+      const group = block.group
+      return `
         <section class="env-block env-block-${group.key}">
           <div class="env-block-header">
             <div class="env-block-title">
@@ -1063,12 +1800,7 @@ function renderPipelineDetailContent(detail: PipelineDetailView) {
             ${renderPipelineStatusBadge(group.status)}
           </div>
           <div class="env-block-body">${renderEnvStageRows(group.stages)}</div>
-        </section>`)
-
-      const checkpoint = layout.checkpoints[index]
-      if (checkpoint) {
-        envBlocks.push(renderCheckpointBlock(checkpoint))
-      }
+        </section>`
     })
 
     runSection = `
@@ -1160,6 +1892,11 @@ function getPipelinePanelShell() {
       .checkpoint-hint { color: #9CA3AF; font-size: 12px; }
       .checkpoint-done { color: #6B7280; }
       button:disabled { opacity: .6; cursor: not-allowed; }
+      .search-input { width: 220px; padding: 6px 10px; border-radius: 6px; border: 1px solid #334155; background: #0F172A; color: #E5E7EB; font-size: 13px; outline: none; }
+      .search-input:focus { border-color: #2563EB; }
+      .search-input::placeholder { color: #6B7280; }
+      .pagination-bar { display: flex; align-items: center; justify-content: center; gap: 12px; margin-top: 16px; padding-top: 16px; border-top: 1px solid #1F2937; }
+      .pagination-info { color: #9CA3AF; font-size: 13px; min-width: 220px; text-align: center; }
     </style>
   </head>
   <body>
@@ -1190,6 +1927,19 @@ function getPipelinePanelShell() {
           }
           if (message.type === 'updateRow' && message.pipelineId && message.rowHtml) {
             replacePipelineRow(message.pipelineId, message.rowHtml);
+          }
+        });
+
+        function submitPipelineSearch() {
+          const input = document.getElementById('pipeline-search-input');
+          const value = input ? input.value.trim() : '';
+          if (!value) return;
+          vscode.postMessage({ command: 'searchById', searchValue: value });
+        }
+
+        document.addEventListener('keydown', function (event) {
+          if (event.key === 'Enter' && event.target && event.target.id === 'pipeline-search-input') {
+            submitPipelineSearch();
           }
         });
 
@@ -1231,6 +1981,21 @@ function getPipelinePanelShell() {
             vscode.postMessage({ command: 'refreshList' });
             return;
           }
+          if (action === 'page-prev' || action === 'page-next') {
+            if (target.disabled) return;
+            const page = Number(target.dataset.page);
+            if (!page || page < 1) return;
+            vscode.postMessage({ command: 'goToPage', page: page });
+            return;
+          }
+          if (action === 'search-by-id') {
+            submitPipelineSearch();
+            return;
+          }
+          if (action === 'clear-search') {
+            vscode.postMessage({ command: 'clearPipelineSearch' });
+            return;
+          }
           if (action === 'pass-checkpoint') {
             const jobId = Number(target.dataset.jobId);
             if (!jobId) return;
@@ -1258,9 +2023,35 @@ function buildYunxiaoFlowBaseUrl(apiOrigin: string, organizationId?: string) {
 }
 
 
-async function fetchPipelineList(baseUrl: string, token: string, page: number, perPage: number) {
+function parsePipelineListPageInfo(
+  response: Response,
+  page: number,
+  perPage: number,
+  itemCount: number
+): PipelineListPageInfo {
+  const headerPage = Number(response.headers.get('x-page'))
+  const headerPerPage = Number(response.headers.get('x-per-page'))
+  const headerTotal = Number(response.headers.get('x-total'))
+  const headerTotalPages = Number(response.headers.get('x-total-pages'))
+
+  const resolvedPage = Number.isFinite(headerPage) && headerPage > 0 ? headerPage : page
+  const resolvedPerPage = Number.isFinite(headerPerPage) && headerPerPage > 0 ? headerPerPage : perPage
+  const resolvedTotal = Number.isFinite(headerTotal) && headerTotal >= 0 ? headerTotal : 0
+  const resolvedTotalPages = Number.isFinite(headerTotalPages) && headerTotalPages > 0
+    ? headerTotalPages
+    : (itemCount < resolvedPerPage ? resolvedPage : 0)
+
+  return {
+    page: resolvedPage,
+    perPage: resolvedPerPage,
+    total: resolvedTotal,
+    totalPages: resolvedTotalPages
+  }
+}
+
+async function fetchPipelineList(baseUrl: string, token: string, page: number, perPage: number): Promise<PipelineListResult> {
   const url = `${baseUrl}/pipelines?page=${page}&perPage=${perPage}`
-  const response = await fetch(url, {
+  const response = await fetchWithDebug(url, {
     method: 'GET',
     headers: {
       'Content-Type': 'application/json',
@@ -1280,7 +2071,11 @@ async function fetchPipelineList(baseUrl: string, token: string, page: number, p
     }
     throw new Error(`HTTP ${response.status}: ${body}`)
   }
-  return await response.json() as Array<{ pipelineId: number; pipelineName: string; createAccountId: string; createTime: number }>
+  const pipelines = await response.json() as Array<{ pipelineId: number; pipelineName: string; createAccountId: string; createTime: number }>
+  return {
+    pipelines,
+    pageInfo: parsePipelineListPageInfo(response, page, perPage, pipelines.length)
+  }
 }
 
 function formatPipelineLoadError(error: unknown) {
