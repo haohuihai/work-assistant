@@ -3,6 +3,7 @@ import { registerApiTestPage } from './apiTestPage'
 import { fetchWithDebug } from './httpDebug'
 import { registerRightClickMenu } from './rightClickMenu'
 import { showPipelineList } from './pipeLine'
+import { activateGitReview } from './gitReview'
 import { escapeHtml, normalizeUrl } from './utils'
 type ApiItem = {
   path: string
@@ -143,6 +144,7 @@ export function activate(context: vscode.ExtensionContext) {
   const workView = vscode.window.createTreeView('swaggerHelper.workView', { treeDataProvider: provider })
   // registerApiTestPage(context)
   registerRightClickMenu(context)
+  activateGitReview(context)
   // registerWhenClauseTest(context)
   context.subscriptions.push(
     workView,
@@ -451,10 +453,15 @@ function schemaToJson(schema: any, swagger: any, visited: Set<string> = new Set(
   if (depth > 10) {
     return { __max_depth_exceeded: true }
   }
-
+//   {
+//     "schema": {
+//         "$ref": "#/components/schemas/Go.Common.Model.Result"
+//     }
+//    }
   if (!schema) return {}
-
+  // 
   if (schema.$ref) {
+    //  
     const refKey = schema.$ref
     if (visited.has(refKey)) {
       // 检测到循环引用，返回一个占位符
@@ -467,22 +474,23 @@ function schemaToJson(schema: any, swagger: any, visited: Set<string> = new Set(
     return result
   }
 
-  if (schema.oneOf?.length) {
-    return schemaToJson(schema.oneOf[0], swagger, visited, depth + 1)
-  }
-  if (schema.anyOf?.length) {
-    return schemaToJson(schema.anyOf[0], swagger, visited, depth + 1)
-  }
-  if (schema.allOf?.length) {
-    return schema.allOf.reduce((acc: any, item: any) => {
-      const current = schemaToJson(item, swagger, visited, depth + 1)
-      if (current && typeof current === 'object' && !Array.isArray(current)) {
-        return { ...acc, ...current }
-      }
-      return acc
-    }, {})
-  }
-
+  // if (schema.oneOf?.length) {
+  //   return schemaToJson(schema.oneOf[0], swagger, visited, depth + 1)
+  // }
+  // if (schema.anyOf?.length) {
+  //   return schemaToJson(schema.anyOf[0], swagger, visited, depth + 1)
+  // }
+  // if (schema.allOf?.length) {
+  //   return schema.allOf.reduce((acc: any, item: any) => {
+  //     const current = schemaToJson(item, swagger, visited, depth + 1)
+  //     if (current && typeof current === 'object' && !Array.isArray(current)) {
+  //       return { ...acc, ...current }
+  //     }
+  //     return acc
+  //   }, {})
+  // }
+  console.log('schema++++++++++++++++', schema);
+  
   if (schema.type === 'object') {
     const obj: any = {}
     if (schema.description) {
@@ -635,6 +643,29 @@ function withParameterMeta(value: any, parameter: any) {
 function buildResponseJson(swagger: any, path: string, method: string) {
   const detail = swagger?.paths?.[path]?.[method] || {}
   const responses = detail.responses || {}
+  //   {
+  //     "200": {
+  //         "description": "Success",
+  //         "content": {
+  //             "text/plain": {
+  //                 "schema": {
+  //                     "$ref": "#/components/schemas/Go.Common.Model.Result"
+  //                 }
+  //             },
+  //             "application/json": {
+  //                 "schema": {
+  //                     "$ref": "#/components/schemas/Go.Common.Model.Result"
+  //                 }
+  //             },
+  //             "text/json": {
+  //                 "schema": {
+  //                     "$ref": "#/components/schemas/Go.Common.Model.Result"
+  //                 }
+  //             }
+  //         }
+  //     }
+  // }
+  console.log('responses----------------', responses)
   const preferredStatus = ['200', '201', 'default']
   const status = preferredStatus.find(code => responses[code]) || Object.keys(responses)[0]
   const selected = status ? responses[status] : undefined

@@ -3,21 +3,10 @@
   "displayName": "工作助手 (Work Assistant)",
   "description": "基于 Swagger/OpenAPI 的工作助手，用于管理接口项目、搜索请求、查看接口详情并测试 API。",
   "version": "0.1.3",
-  "engines": { "vscode": "^1.80.0" },
+  "engines": {
+    "vscode": "^1.80.0"
+  },
   "main": "./out/extension.js",
-  "activationEvents": [
-    "onCommand:swaggerHelper.openUI",
-    "onCommand:swaggerHelper.lookupRoute",
-    "onCommand:swaggerHelper.addProject",
-    "onCommand:swaggerHelper.searchRequests",
-    "onCommand:swaggerHelper.clearSearch",
-    "onCommand:swaggerHelper.renameProject",
-    "onCommand:swaggerHelper.refreshProject",
-    "onCommand:swaggerHelper.openApiDetail",
-    "onCommand:swaggerHelper.showPipelineList",
-    "onView:swaggerHelper.workView",
-    "onCommand:swaggerHelper.publish"
-  ],
   "contributes": {
     "commands": [
       {
@@ -63,6 +52,16 @@
       {
         "command": "swaggerHelper.publish",
         "title": "npm run publish"
+      },
+      {
+        "command": "swaggerHelper.aiCheckAndCommit",
+        "title": "AI 校验后提交",
+        "category": "Git"
+      },
+      {
+        "command": "swaggerHelper.installCommitGuardHook",
+        "title": "安装提交前校验 Hook",
+        "category": "Git"
       }
     ],
     "viewsContainers": {
@@ -114,12 +113,27 @@
         {
           "command": "swaggerHelper.showPipelineList",
           "when": "view == swaggerHelper.workView",
-          "group": "navigation@1"
+          "group": "navigation@4"
         },
         {
           "command": "swaggerHelper.openApiTestPage",
           "when": "view == swaggerHelper.apiTestPage",
           "group": "navigation@1"
+        }
+      ],
+      "scm/title": [
+        {
+          "command": "swaggerHelper.aiCheckAndCommit",
+          "when": "scmProvider == git",
+          "group": "2_main@1"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "swaggerHelper.aiCheckAndCommit"
+        },
+        {
+          "command": "swaggerHelper.installCommitGuardHook"
         }
       ],
       "view/item/context": [
@@ -176,11 +190,25 @@
           "type": "boolean",
           "default": false,
           "description": "开启后在「工作助手 HTTP」输出面板记录插件发出的 HTTP 请求与响应（token 会自动脱敏）。"
+        },
+        "swaggerHelper.qwen.apiKey": {
+          "type": "string",
+          "default": "",
+          "description": "阿里云百炼（DashScope）API Key，用于调用通义千问。可在百炼控制台创建并复制。"
+        },
+        "swaggerHelper.qwen.baseUrl": {
+          "type": "string",
+          "default": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+          "description": "千问 OpenAI 兼容接口 Base URL。国内默认 dashscope.aliyuncs.com；国际可用 dashscope-intl.aliyuncs.com。"
+        },
+        "swaggerHelper.qwen.model": {
+          "type": "string",
+          "default": "qwen-plus",
+          "description": "千问模型名称，例如 qwen-plus、qwen-turbo、qwen-max。"
         }
       }
     }
   },
-  
   "files": [
     "out",
     "resources",
@@ -200,10 +228,9 @@
     "watch": "tsc -watch -p ./",
     "publish": "pnpm run package && vsce publish"
   },
-  "dependencies": {
-  },
   "devDependencies": {
-    "typescript": "^5.0.0",
-    "@types/vscode": "^1.80.0"
+    "@types/node": "^26.1.1",
+    "@types/vscode": "^1.80.0",
+    "typescript": "^5.0.0"
   }
 }

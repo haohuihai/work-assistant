@@ -4,10 +4,11 @@
     "target": "ES2022",
     "outDir": "out",
     "lib": ["ES2022", "DOM"],
+    "types": ["node", "vscode"],
     "sourceMap": true,
     "rootDir": "src",
     "strict": true,
     "skipLibCheck": true,
-    "verbatimModuleSyntax": false  // Add this line
+    "verbatimModuleSyntax": false
   }
 }
